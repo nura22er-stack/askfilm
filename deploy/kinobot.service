@@ -1,0 +1,16 @@
+[Unit]
+Description=KinoBot Telegram bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/kinobot
+EnvironmentFile=/opt/kinobot/.env
+ExecStart=/opt/kinobot/.venv/bin/python /opt/kinobot/main.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
