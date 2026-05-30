@@ -95,6 +95,15 @@ class Database:
                 added_by INTEGER,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+
+            CREATE TABLE IF NOT EXISTS join_requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                chat_id TEXT NOT NULL,
+                requested_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                status TEXT NOT NULL DEFAULT 'pending',
+                UNIQUE(user_id, chat_id)
+            );
             """
         )
         await db.commit()
@@ -125,6 +134,20 @@ class Database:
                 "channel_chat_id": "TEXT",
                 "channel_message_id": "INTEGER",
                 "updated_at": "TEXT",
+            },
+        )
+        await self._ensure_table_columns(
+            "required_channels",
+            {
+                "channel_type": "TEXT NOT NULL DEFAULT 'public'",
+                "is_active": "INTEGER NOT NULL DEFAULT 1",
+                "join_request": "INTEGER NOT NULL DEFAULT 0",
+            },
+        )
+        await self._ensure_table_columns(
+            "join_requests",
+            {
+                "status": "TEXT NOT NULL DEFAULT 'pending'",
             },
         )
 
@@ -385,6 +408,35 @@ class Database:
             (channel_id,),
         )
         await self._db.commit()
+
+    async def save_join_request(
+        self,
+        user_id: int,
+        chat_id: str,
+        status: str = "pending",
+    ) -> None:
+        await self._db.execute(
+            """
+            INSERT INTO join_requests (user_id, chat_id, requested_at, status)
+            VALUES (?, ?, CURRENT_TIMESTAMP, ?)
+            ON CONFLICT(user_id, chat_id) DO UPDATE SET
+                requested_at = CURRENT_TIMESTAMP,
+                status = excluded.status
+            """,
+            (user_id, chat_id, status),
+        )
+        await self._db.commit()
+
+    async def has_join_request(self, user_id: int, chat_id: str) -> bool:
+        value = await self._fetch_value(
+            """
+            SELECT COUNT(*)
+            FROM join_requests
+            WHERE user_id = ? AND chat_id = ?
+            """,
+            (user_id, chat_id),
+        )
+        return int(value) > 0
 
     async def create_referral_program(
         self,

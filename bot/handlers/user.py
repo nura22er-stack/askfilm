@@ -2,9 +2,9 @@ from html import escape
 from typing import Any
 
 from aiogram import Bot, F, Router
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.filters import CommandStart
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, ChatJoinRequest, Message
 
 from bot import emojis as e
 from bot.config import Config, RequiredChannel
@@ -13,11 +13,13 @@ from bot.keyboards import back_keyboard, channel_keyboard, main_menu_keyboard, v
 
 router = Router(name="user")
 
+SUBSCRIBED_STATUSES = {"creator", "administrator", "member"}
+
 
 def _channel_value(channel: RequiredChannel | dict[str, Any], key: str) -> Any:
     if isinstance(channel, dict):
-        return channel[key]
-    return getattr(channel, key)
+        return channel.get(key)
+    return getattr(channel, key, None)
 
 
 async def subscription_channels(
@@ -28,8 +30,17 @@ async def subscription_channels(
     return [*config.required_channels, *db_channels]
 
 
+def is_active_member(member: Any | None) -> bool:
+    if member is None:
+        return False
+    if member.status in SUBSCRIBED_STATUSES:
+        return True
+    return member.status == "restricted" and bool(getattr(member, "is_member", False))
+
+
 async def is_subscribed(
     bot: Bot,
+    db: Database,
     user_id: int,
     channels: list[RequiredChannel | dict[str, Any]],
 ) -> bool:
@@ -37,12 +48,27 @@ async def is_subscribed(
         return True
 
     for channel in channels:
+        chat_id = str(_channel_value(channel, "chat_id"))
+        channel_type = str(_channel_value(channel, "channel_type") or "public")
+        join_request = bool(_channel_value(channel, "join_request") or False)
         try:
-            member = await bot.get_chat_member(_channel_value(channel, "chat_id"), user_id)
-        except TelegramBadRequest:
+            member = await bot.get_chat_member(chat_id, user_id)
+        except (TelegramBadRequest, TelegramForbiddenError):
+            member = None
+
+        if is_active_member(member):
+            continue
+
+        if (channel_type == "private" or join_request) and await db.has_join_request(
+            user_id,
+            chat_id,
+        ):
+            continue
+
+        if channel_type == "private" or join_request:
             return False
 
-        if member.status not in {"creator", "administrator", "member"}:
+        if not is_active_member(member):
             return False
 
     return True
@@ -59,7 +85,7 @@ async def require_subscription(
         return True
 
     channels = await subscription_channels(db, config)
-    if await is_subscribed(bot, message.from_user.id, channels):
+    if await is_subscribed(bot, db, message.from_user.id, channels):
         await db.mark_subscription_passed(message.from_user.id)
         return True
 
@@ -198,7 +224,7 @@ async def check_subscription(
     config: Config,
 ) -> None:
     channels = await subscription_channels(db, config)
-    if await is_subscribed(bot, callback.from_user.id, channels):
+    if await is_subscribed(bot, db, callback.from_user.id, channels):
         await db.mark_subscription_passed(callback.from_user.id)
         await callback.message.delete()
         await callback.message.answer(
@@ -209,7 +235,15 @@ async def check_subscription(
         await callback.answer()
         return
 
-    await callback.answer("Hali obuna bo'lmagansiz.", show_alert=True)
+    await callback.answer("Hali kanalga zayavka yubormagansiz.", show_alert=True)
+
+
+@router.chat_join_request()
+async def on_join_request(join_request: ChatJoinRequest, db: Database) -> None:
+    await db.save_join_request(
+        join_request.from_user.id,
+        str(join_request.chat.id),
+    )
 
 
 @router.callback_query(F.data == "home")
